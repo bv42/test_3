@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const automationService = require('./automation_driver');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '30mb' }))
 
 // --- CONFIG ---
 const CONVERSATION_DIR = path.join(__dirname, '..', 'conversations');
