@@ -1,62 +1,85 @@
 // src/bridge_server.js
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 const automationService = require('./automation_driver');
-const app = express();
 
+const app = express();
 app.use(express.json());
 
-// --- LOGGING MIDDLEWARE (New) ---
+// --- CONFIG ---
+const CONVERSATION_DIR = path.join(__dirname, '..', 'conversations');
+if (!fs.existsSync(CONVERSATION_DIR)) {
+    fs.mkdirSync(CONVERSATION_DIR, { recursive: true });
+}
+
+// --- ARCHIVIST: Saved Conversations ---
+function saveConversation(messages, fullResponse, model) {
+    if (!messages || messages.length === 0) return;
+    try {
+        const firstMsg = messages[0].content || "empty";
+        const threadId = crypto.createHash('sha256').update(firstMsg).digest('hex').substring(0, 8);
+        const safeTitle = firstMsg.substring(0, 30).replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        const dateStr = new Date().toISOString().split('T')[0];
+        const filename = path.join(CONVERSATION_DIR, `${dateStr}_${safeTitle}_${threadId}.md`);
+
+        let content = "";
+        if (!fs.existsSync(filename)) {
+            content += `---\nid: ${threadId}\nmodel: ${model}\ncreated: ${new Date().toISOString()}\n---\n\n`;
+            messages.forEach(m => content += `## ${m.role.toUpperCase()}\n\n${m.content}\n\n---\n\n`);
+        } else {
+            // Append only the new turn (Last User Message + Assistant Response)
+            const lastUserMsg = messages[messages.length - 1];
+            if (lastUserMsg.role === 'user') {
+                content += `## USER\n\n${lastUserMsg.content}\n\n---\n\n`;
+            }
+        }
+
+        content += `## ASSISTANT\n\n${fullResponse}\n\n---\n\n`;
+
+        fs.appendFile(filename, content, (err) => {
+            if (err) console.error(`[Archivist] Save failed: ${err.message}`);
+            else console.log(`[Archivist] Saved turn to ${path.basename(filename)}`);
+        });
+    } catch (e) {
+        console.error(`[Archivist] Error: ${e.message}`);
+    }
+}
+
+// --- LOGGING ---
 app.use((req, res, next) => {
-    const timestamp = new Date().toISOString().split('T')[1].slice(0, -1); // HH:MM:SS.mmm
-    const snippet = req.body.messages
-        ? `Messages: ${req.body.messages.length}`
-        : `Body: ${JSON.stringify(req.body).substring(0, 50)}...`;
-
-    console.log(`[${timestamp}] [Gateway] INCOMING -> ${req.method} ${req.url} | ${snippet}`);
-
-    // Capture response finish to log duration/status
-    const start = Date.now();
-    res.on('finish', () => {
-        const duration = Date.now() - start;
-        console.log(`[${timestamp}] [Gateway] OUTGOING <- ${res.statusCode} (${duration}ms)`);
-    });
-
+    const timestamp = new Date().toISOString().split('T')[1].slice(0, -1);
+    console.log(`[${timestamp}] [Gateway] INCOMING -> ${req.method} ${req.url}`);
     next();
 });
 
-// Initialize CDP connection
+// Initialize Connection
 automationService.initialize();
 
-// --- CORE HANDLER ---
+// --- CHAT HANDLER ---
 const chatHandler = async (req, res) => {
     const messages = req.body.messages || [];
     const model = req.body.model || "gitlab-integrated";
 
-    console.log(`[Bridge] Processing ${messages.length} messages for model '${model}'...`);
-
+    // 1. Context Aggregation (Flattening)
     let aggregatedContext = "";
-
-    // Context Aggregation
     messages.forEach(msg => {
-        if (msg.role === 'system') {
-            aggregatedContext += `[SYSTEM]: ${msg.content}\n`;
-        } else if (msg.role === 'user') {
-            aggregatedContext += `[USER]: ${msg.content}\n`;
-        } else if (msg.role === 'assistant') {
-            aggregatedContext += `[ASSISTANT]: ${msg.content}\n`;
-        }
+        aggregatedContext += `[${msg.role.toUpperCase()}]: ${msg.content}\n`;
     });
-
     aggregatedContext += "\n[RESPONSE]:";
 
-    // Setup Stream
-    res.setHeader('Content-Type', 'application/x-ndjson');
-    res.setHeader('Transfer-Encoding', 'chunked');
+    // 2. Setup Stream Headers
+    res.setHeader('Content-Type', 'text/event-stream'); // Better for some IDEs than x-ndjson
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
 
     let isComplete = false;
+    let fullResponseAccumulator = ""; // For the Archivist
+
     const idleTimeout = setTimeout(() => {
         if (!isComplete) {
-            console.log("[Bridge] Timeout: No response from browser within 45s.");
+            console.log("[Bridge] Timeout waiting for browser data.");
             res.end();
             isComplete = true;
         }
@@ -66,69 +89,54 @@ const chatHandler = async (req, res) => {
         await automationService.executeQuery(
             aggregatedContext,
             (chunk) => {
-                // OpenAI/Ollama compatible stream format
+                // Handle Data Chunk
+                fullResponseAccumulator += chunk;
+
+                // Format: OpenAI Stream
                 const payload = JSON.stringify({
                     id: "chatcmpl-" + Date.now(),
                     object: "chat.completion.chunk",
                     created: Math.floor(Date.now() / 1000),
                     model: model,
-                    choices: [{
-                        index: 0,
-                        delta: { content: chunk },
-                        finish_reason: null
-                    }]
+                    choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }]
                 });
-                res.write(payload + '\n');
+                res.write(`data: ${payload}\n\n`);
             },
             () => {
+                // Handle Completion
                 if (!isComplete) {
                     const donePayload = JSON.stringify({
                         id: "chatcmpl-" + Date.now(),
                         object: "chat.completion.chunk",
                         created: Math.floor(Date.now() / 1000),
                         model: model,
-                        choices: [{
-                            index: 0,
-                            delta: {},
-                            finish_reason: "stop"
-                        }]
+                        choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
                     });
-                    res.write(donePayload + '\n');
+                    res.write(`data: ${donePayload}\n\n`);
+                    res.write(`data: [DONE]\n\n`);
                     res.end();
+
                     isComplete = true;
                     clearTimeout(idleTimeout);
-                    console.log("[Bridge] Stream complete.");
+
+                    // Trigger Archivist
+                    saveConversation(messages, fullResponseAccumulator, model);
                 }
             }
         );
     } catch (e) {
         console.error("Bridge Error:", e.message);
-        // Ensure we don't crash the stream if headers are already sent
         if (!res.headersSent) res.status(500).json({ error: e.message });
-        else res.end();
     }
 };
 
-// --- ROUTES ---
-
-// 1. Ollama Standard
 app.post('/api/chat', chatHandler);
-
-// 2. OpenAI Standard (Fixes your 404 error)
 app.post('/v1/chat/completions', chatHandler);
-
-// 3. Service Discovery
-app.get('/api/tags', (req, res) => {
-    res.json({ models: [{ name: "gitlab-integrated" }] });
-});
-app.get('/v1/models', (req, res) => {
-    res.json({ object: "list", data: [{ id: "gitlab-integrated", object: "model" }] });
-});
+app.get('/api/tags', (req, res) => res.json({ models: [{ name: "gitlab-integrated" }] }));
 
 const PORT = 11434;
 const server = app.listen(PORT, '127.0.0.1', () => {
-    console.log(`[Info] DevTools Bridge active on 127.0.0.1:${PORT}`);
-    console.log(`[Info] Supported Routes: /api/chat, /v1/chat/completions`);
+    console.log(`[Info] Bridge active on 127.0.0.1:${PORT}`);
 });
 
 module.exports = server;

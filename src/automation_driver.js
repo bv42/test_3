@@ -18,29 +18,21 @@ class AutomationService {
                 browserURL: CONFIG.connectionURL,
                 defaultViewport: null
             });
-
             const pages = await this.browser.pages();
             this.page = pages.find(p => p.url().includes('gitlab'));
-
             if (!this.page) {
-                console.log("[Driver] No GitLab tab found. Opening new one...");
                 this.page = await this.browser.newPage();
                 await this.page.goto(CONFIG.targetBaseUrl, { waitUntil: 'domcontentloaded' });
-            } else {
-                console.log(`[Driver] Attaching to existing tab: ${this.page.url()}`);
             }
 
-            // Mirror browser logs
+            // Console Mirroring
             this.page.on('console', msg => {
                 const text = msg.text();
                 if (text.startsWith('[Bridge]') || text.startsWith('[WS]')) {
                     console.log(`[Chrome] ${text}`);
                 }
             });
-
-        } catch (e) {
-            console.warn(`[Warn] CDP Connection Failed: ${e.message}`);
-        }
+        } catch (e) { console.warn(`[Warn] Connection Failed: ${e.message}`); }
     }
 
     async executeQuery(contextPayload, onData, onComplete) {
@@ -48,168 +40,101 @@ class AutomationService {
         const requestId = 'req_' + Date.now();
 
         await this.page.exposeFunction(requestId, (data) => {
-            if (data === "EOF") {
-                onComplete();
-            } else {
-                onData(data);
-            }
+            if (data === "EOF") onComplete();
+            else onData(data);
         });
-
-        console.log("[Driver] Injecting 'Old Logic' protocol...");
 
         await this.page.evaluate(async (payload, callbackId) => {
             const log = (msg) => console.log(`[Bridge] ${msg}`);
             const wsLog = (msg) => console.log(`[WS] ${msg}`);
 
-            log("--- SEQUENCE START (LEGACY PROTOCOL) ---");
+            // 1. HELPER: Fetch CSRF & UserID
+            const getCsrf = () => document.querySelector('meta[name="csrf-token"]')?.content;
+            const csrf = getCsrf();
+            if (!csrf) { window[callbackId]("EOF"); return; }
 
-            // 1. HELPER: GraphQL Fetcher (Exact same headers as old code)
-            const csrfMeta = document.querySelector('meta[name="csrf-token"]');
-            if (!csrfMeta) {
-                window[callbackId]("Error: CSRF Missing");
-                window[callbackId]("EOF");
-                return;
-            }
-            const csrf = csrfMeta.content;
-
-            const gitlabQuery = async (query, variables = {}) => {
+            // Fetch User ID (Legacy Logic)
+            let userId = "gid://gitlab/User/1";
+            try {
                 const res = await fetch('/api/graphql', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRF-Token': csrf,
-                        'X-GitLab-Feature-Category': 'source_code_management' // Header from old code
-                    },
-                    body: JSON.stringify({ query, variables })
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+                    body: JSON.stringify({ query: `query { currentUser { id } }` })
                 });
                 const json = await res.json();
-                return json.data;
-            };
+                if (json.data?.currentUser?.id) userId = json.data.currentUser.id;
+            } catch (e) { log("User ID Fetch Failed"); }
 
-            // 2. STEP 1: Get User ID (The robust way from old code)
-            let userId = null;
-            try {
-                log("Fetching Current User ID...");
-                const uData = await gitlabQuery(`query { currentUser { id } }`);
-                userId = uData.currentUser.id;
-                log(`User ID Retrieved: ${userId}`);
-            } catch (e) {
-                log(`Failed to fetch User ID: ${e.message}`);
-                window[callbackId]("EOF");
-                return;
-            }
-
-            // 3. STEP 2: Configure Subscription (Exact copy from old proxy.js)
+            // 2. WebSocket Setup
             const clientSubscriptionId = crypto.randomUUID();
-
-            // This is the EXACT subscription query from the working code
-            const subscriptionQuery = `subscription aiCompletionResponse($userId: UserID, $clientSubscriptionId: String, $aiAction: AiAction) {
-                aiCompletionResponse(userId: $userId, clientSubscriptionId: $clientSubscriptionId, aiAction: $aiAction) { content, errors }
-            }`;
-
-            const subIdentifier = JSON.stringify({
-                channel: 'GraphqlChannel', // OLD CODE USED THIS, NOT AiActionChannel
-                query: subscriptionQuery,
-                variables: {
-                    userId: userId,
-                    clientSubscriptionId: clientSubscriptionId,
-                    aiAction: "CHAT"
-                }
-            });
-
-            // 4. STEP 3: WebSocket Connection
             const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${wsProtocol}//${location.host}/-/cable`;
-
-            wsLog(`Connecting to ${wsUrl}`);
             const ws = new WebSocket(wsUrl);
+
+            // 3. Subscription Identifier
+            const subIdentifier = JSON.stringify({
+                channel: 'GraphqlChannel',
+                query: `subscription aiCompletionResponse($userId: UserID, $clientSubscriptionId: String, $aiAction: AiAction) {
+                    aiCompletionResponse(userId: $userId, clientSubscriptionId: $clientSubscriptionId, aiAction: $aiAction) { content, errors }
+                }`,
+                variables: { userId, clientSubscriptionId, aiAction: "CHAT" }
+            });
+
+            ws.onopen = () => {
+                wsLog("Sending Subscribe...");
+                ws.send(JSON.stringify({ command: "subscribe", identifier: subIdentifier }));
+            };
 
             let isMutationSent = false;
 
-            const closeSession = (reason) => {
-                log(`Closing: ${reason}`);
-                if (ws.readyState === WebSocket.OPEN) ws.close();
-                window[callbackId]("EOF");
-            };
-
-            ws.onopen = () => {
-                wsLog("OPEN. Sending Subscribe (GraphqlChannel)...");
-                ws.send(JSON.stringify({
-                    command: "subscribe",
-                    identifier: subIdentifier
-                }));
-            };
-
             ws.onmessage = (event) => {
                 const msg = JSON.parse(event.data);
-
                 if (msg.type === 'ping') return;
-                wsLog(`RX [${msg.type || 'DATA'}]`);
 
-                if (msg.type === 'welcome') return;
-
-                // --- CONFIRMATION HANDLER ---
+                // A. CONFIRMATION
                 if (msg.type === 'confirm_subscription') {
                     if (!isMutationSent) {
-                        log("Subscription Confirmed. Sending Mutation (DUO_CHAT)...");
                         isMutationSent = true;
-
-                        // Exact Mutation from Old Code (includes conversationType)
-                        const mutation = `mutation chat($content: String!, $clientSubscriptionId: String!) {
-                            aiAction(input: { 
-                                chat: { content: $content }, 
-                                conversationType: DUO_CHAT, 
-                                clientSubscriptionId: $clientSubscriptionId 
-                            }) { 
-                                requestId, errors 
-                            }
-                        }`;
-
-                        gitlabQuery(mutation, {
-                            content: payload, // mapped from 'question' in variable
-                            clientSubscriptionId: clientSubscriptionId
-                        }).then(data => {
-                            if (data.aiAction?.errors?.length > 0) {
-                                log(`Mutation Error: ${JSON.stringify(data.aiAction.errors)}`);
-                            } else {
-                                log("Mutation Sent Successfully.");
-                            }
+                        fetch('/api/graphql', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+                            body: JSON.stringify({
+                                query: `mutation chat($content: String!, $clientSubscriptionId: String!) {
+                                    aiAction(input: { chat: { content: $content }, conversationType: DUO_CHAT, clientSubscriptionId: $clientSubscriptionId }) { errors }
+                                }`,
+                                variables: { content: payload, clientSubscriptionId }
+                            })
                         });
                     }
                     return;
                 }
 
-                // --- PAYLOAD HANDLER ---
+                // B. DATA EXTRACTION (Debugged)
                 if (msg.message) {
-                    // Logic from old code: msg.message.result.data...
-                    const payload = msg.message.result?.data?.aiCompletionResponse ||
-                        msg.message.data?.aiCompletionResponse;
+                    // Try all known paths
+                    const responseData = msg.message.result?.data?.aiCompletionResponse ||
+                        msg.message.data?.aiCompletionResponse ||
+                        msg.message.aiCompletionResponse; // Some versions flat-pack it
 
-                    if (payload) {
-                        const content = payload.content;
+                    if (responseData) {
+                        const content = responseData.content;
                         if (content) {
                             window[callbackId](content);
                         }
-
-                        // Error Handling from old code
-                        if (payload.errors && payload.errors.length > 0) {
-                            log(`GraphQL Payload Error: ${JSON.stringify(payload.errors)}`);
-                            closeSession("API Error");
-                        }
+                    } else {
+                        // DEBUG: If we have message but no payload, log keys to debug
+                        wsLog(`Payload Keys: ${Object.keys(msg.message).join(', ')}`);
                     }
 
                     if (msg.message.more === false) {
-                        log("Stream Complete (more=false).");
-                        closeSession("Done");
+                        window[callbackId]("EOF");
+                        ws.close();
                     }
                 }
             };
 
-            ws.onerror = (e) => closeSession("Socket Error");
-            // Watchdog: 45s timeout
-            setTimeout(() => {
-                if (ws.readyState === WebSocket.OPEN) closeSession("Timeout");
-            }, 45000);
+            // Watchdog (30s)
+            setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.close(); }, 30000);
 
         }, contextPayload, requestId);
     }
