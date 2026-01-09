@@ -1,0 +1,41 @@
+<meta_task>
+  <role>
+    You are a Principal Software Architect. Your goal is to reverse-engineer the "Implied Style Guide" and "Architectural Invariants" of the attached codebase.
+  </role>
+
+  <input_data>
+    I have attached several source files that represent the "Gold Standard" of this project.
+  </input_data>
+
+  <objective>
+    Analyze these files to derive the strict rules that governed their creation.
+    Formalize these patterns into a set of XML constraints that I can feed into an AI Coding Agent to ensure future code matches this style perfectly.
+  </objective>
+
+  <analysis_vectors>
+    1. **Library Strictness:** What is used? What is conspicuously avoided? (e.g., "Uses Jackson, avoids Gson", "Uses Lombok, avoids boilerplate getters").
+    2. **Architectural Boundaries:** Where does business logic live? (e.g., "Controllers are thin; Services are rich").
+    3. **Error Handling:** How are exceptions managed? (e.g., "Custom RuntimeExceptions", "Global Exception Handler", "Result Monads").
+    4. **Syntax & Idioms:** Functional vs. Imperative? Specific naming conventions?
+    5. **Negative Constraints:** What should the AI *never* do? (e.g., "Never expose Entities in the API; use DTOs").
+  </analysis_vectors>
+
+  <output_format>
+    Output ONLY a valid XML block that I can copy-paste into my system prompt.
+    Use the following schema:
+
+    <project_invariants>
+        <tech_stack>
+            <lib behavior="mandatory">...</lib>
+            <lib behavior="forbidden">...</lib>
+        </tech_stack>
+        <coding_style>
+            <rule id="1">...</rule>
+            <rule id="2">...</rule>
+        </coding_style>
+        <architectural_patterns>
+            <pattern>...</pattern>
+        </architectural_patterns>
+    </project_invariants>
+  </output_format>
+</meta_task>
