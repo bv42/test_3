@@ -20,9 +20,23 @@ class AutomationService {
             });
             const pages = await this.browser.pages();
             this.page = pages.find(p => p.url().includes('gitlab'));
+
+            // ANTI-DETECT: Hide Webdriver
+            const applyStealth = async (p) => {
+                await p.evaluateOnNewDocument(() => {
+                    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                });
+                await p.evaluate(() => {
+                    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                });
+            };
+
             if (!this.page) {
                 this.page = await this.browser.newPage();
+                try { await applyStealth(this.page); } catch (e) { console.log(`[Warn] Stealth NewPage failed: ${e.message}`); }
                 await this.page.goto(CONFIG.targetBaseUrl, { waitUntil: 'domcontentloaded' });
+            } else {
+                try { await applyStealth(this.page); } catch (e) { console.log(`[Warn] Stealth ExistingPage failed: ${e.message}`); }
             }
 
             // Console Mirroring
@@ -86,6 +100,7 @@ class AutomationService {
             };
 
             let isMutationSent = false;
+            let accumulated = "";
 
             ws.onmessage = (event) => {
                 const msg = JSON.parse(event.data);
@@ -119,7 +134,14 @@ class AutomationService {
                     if (responseData) {
                         const content = responseData.content;
                         if (content) {
-                            window[callbackId](content);
+                            wsLog(`RX Len:${content.length}`);
+                            resetSilence();
+                            // BUFFER STRATEGY:
+                            // Due to out-of-order delivery of deltas vs full text, we cannot stream reliably.
+                            // We wait for the "Full Text" which is usually the longest.
+                            if (content.length > accumulated.length) {
+                                accumulated = content;
+                            }
                         }
                     } else {
                         // DEBUG: If we have message but no payload, log keys to debug
@@ -127,10 +149,28 @@ class AutomationService {
                     }
 
                     if (msg.message.more === false) {
-                        window[callbackId]("EOF");
-                        ws.close();
+                        finalize();
                     }
                 }
+            };
+
+            const finalize = () => {
+                if (ws.readyState !== WebSocket.OPEN) return;
+                wsLog(`[EOF] Finalizing (${accumulated.length} chars)`);
+                window[callbackId](accumulated);
+                window[callbackId]("EOF");
+                ws.close();
+            };
+
+            let silenceTimer;
+            const resetSilence = () => {
+                clearTimeout(silenceTimer);
+                silenceTimer = setTimeout(() => {
+                    if (accumulated.length > 0) {
+                        wsLog(`[Timeout] Silence detected, forcing EOF.`);
+                        finalize();
+                    }
+                }, 2000);
             };
 
             // Watchdog (30s)
