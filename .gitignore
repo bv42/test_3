@@ -5,3 +5,7 @@ coverage/
 # Local development artifacts
 dist/
 tmp/
+walkthrough.md
+task.md
+package-lock.json
+implementation_plan.md
