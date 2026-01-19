@@ -120,6 +120,27 @@ async function runTests() {
             if (!res.includes("BLUE-BANANA-42")) throw new Error(`Context lost. Response: ${res}`);
         });
 
+        // Test 5: Code Diff & Formatting
+        console.log("\n--- Test 5: Code Formatting & Diffs ---");
+        const codePrompt = `
+Refactor the following Python code to use list comprehension. Output the result in a markdown code block.
+def get_squares(n):
+    squares = []
+    for i in range(n):
+        squares.append(i * i)
+    return squares
+`;
+        await chat(
+            [{ role: "user", content: codePrompt }],
+            "gitlab-integrated",
+            (res) => {
+                if (!res.includes("```python") && !res.includes("```")) throw new Error("Missing markdown code block");
+                if (!res.includes("[i * i for i in range(n)]")) throw new Error("Code logic not updated or mangled");
+                // Check if newlines are preserved (rough check)
+                if ((res.match(/\n/g) || []).length < 2) throw new Error("Response seems strictly flattened (no newlines)");
+            }
+        );
+
     } catch (e) {
         console.error("\n!!! SUITE FAILED !!!");
         console.error(e);
