@@ -134,7 +134,7 @@ app.post('/api/chat', chatHandler);
 app.post('/v1/chat/completions', chatHandler);
 app.get('/api/tags', (req, res) => res.json({ models: [{ name: "gitlab-integrated" }] }));
 
-const PORT = 11434;
+const PORT = 11435;
 const server = app.listen(PORT, '127.0.0.1', () => {
     console.log(`[Info] Bridge active on 127.0.0.1:${PORT}`);
 });
