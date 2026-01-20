@@ -102,7 +102,7 @@ const chatHandler = async (req, res) => {
     let isComplete = false;
     let fullResponseAccumulator = ""; // For the Archivist
 
-    const idleTimeout = setTimeout(() => {
+    let idleTimeout = setTimeout(() => {
         if (!isComplete) {
             console.log("[Bridge] Timeout waiting for browser data.");
             res.end();
@@ -110,10 +110,23 @@ const chatHandler = async (req, res) => {
         }
     }, 45000);
 
+    const resetIdleTimeout = () => {
+        clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(() => {
+            if (!isComplete) {
+                console.log("[Bridge] Timeout waiting for browser data.");
+                res.end();
+                isComplete = true;
+            }
+        }, 45000);
+    };
+
     try {
         await automationService.executeQuery(
             aggregatedContext,
             (chunk) => {
+                resetIdleTimeout(); // Reset timeout on activity
+
                 // Handle Data Chunk
                 if (fullResponseAccumulator.length < 1024 * 1024) { // 1MB Limit
                     fullResponseAccumulator += chunk;

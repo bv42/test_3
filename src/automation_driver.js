@@ -104,6 +104,9 @@ class AutomationService {
 
             ws.onmessage = (event) => {
                 const msg = JSON.parse(event.data);
+
+                // Keep-Alive: Reset silence on ANY activity (including pings)
+                resetSilence();
                 if (msg.type === 'ping') return;
 
                 // A. CONFIRMATION
@@ -124,23 +127,23 @@ class AutomationService {
                     return;
                 }
 
-                // B. DATA EXTRACTION (Debugged)
+                // B. DATA EXTRACTION
                 if (msg.message) {
                     // Try all known paths
                     const responseData = msg.message.result?.data?.aiCompletionResponse ||
                         msg.message.data?.aiCompletionResponse ||
-                        msg.message.aiCompletionResponse; // Some versions flat-pack it
+                        msg.message.aiCompletionResponse;
 
                     if (responseData) {
                         const content = responseData.content;
                         if (content) {
                             wsLog(`RX Len:${content.length}`);
-                            resetSilence();
-                            // BUFFER STRATEGY:
-                            // Due to out-of-order delivery of deltas vs full text, we cannot stream reliably.
-                            // We wait for the "Full Text" which is usually the longest.
+
+                            // STREAMING: Send only the new delta
                             if (content.length > accumulated.length) {
+                                const delta = content.substring(accumulated.length);
                                 accumulated = content;
+                                window[callbackId](delta);
                             }
                         }
                     } else {
@@ -157,7 +160,7 @@ class AutomationService {
             const finalize = () => {
                 if (ws.readyState !== WebSocket.OPEN) return;
                 wsLog(`[EOF] Finalizing (${accumulated.length} chars)`);
-                window[callbackId](accumulated);
+                // window[callbackId](accumulated); // REMOVED: Streaming already sent the data
                 window[callbackId]("EOF");
                 ws.close();
             };
