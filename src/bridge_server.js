@@ -27,12 +27,13 @@ function saveConversation(messages, fullResponse, model) {
         let content = "";
         let pendingUserMsg = "";
 
+        let lastUserMsg = null;
         if (!fs.existsSync(filename)) {
             content += `---\nid: ${threadId}\nmodel: ${model}\ncreated: ${new Date().toISOString()}\n---\n\n`;
             messages.forEach(m => content += `## ${m.role.toUpperCase()}\n\n${m.content}\n\n---\n\n`);
         } else {
             // Append only the new turn (Last User Message + Assistant Response)
-            const lastUserMsg = messages[messages.length - 1];
+            lastUserMsg = messages[messages.length - 1];
             if (lastUserMsg.role === 'user') {
                 pendingUserMsg = `## USER\n\n${lastUserMsg.content}\n\n---\n\n`;
             }

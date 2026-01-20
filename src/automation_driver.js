@@ -170,11 +170,11 @@ class AutomationService {
                         wsLog(`[Timeout] Silence detected, forcing EOF.`);
                         finalize();
                     }
-                }, 2000);
+                }, 15000);
             };
 
             // Watchdog (30s)
-            setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.close(); }, 30000);
+            setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.close(); }, 60000);
 
         }, contextPayload, requestId);
     }
