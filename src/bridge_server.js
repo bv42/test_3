@@ -27,7 +27,9 @@ function saveConversation(messages, fullResponse, model) {
         let content = "";
         let pendingUserMsg = "";
 
+
         let lastUserMsg = null;
+
         if (!fs.existsSync(filename)) {
             content += `---\nid: ${threadId}\nmodel: ${model}\ncreated: ${new Date().toISOString()}\n---\n\n`;
             messages.forEach(m => content += `## ${m.role.toUpperCase()}\n\n${m.content}\n\n---\n\n`);
