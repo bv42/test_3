@@ -25,6 +25,8 @@ function saveConversation(messages, fullResponse, model) {
         const filename = path.join(CONVERSATION_DIR, `${dateStr}_${safeTitle}_${threadId}.md`);
 
         let content = "";
+        let pendingUserMsg = "";
+
         if (!fs.existsSync(filename)) {
             content += `---\nid: ${threadId}\nmodel: ${model}\ncreated: ${new Date().toISOString()}\n---\n\n`;
             messages.forEach(m => content += `## ${m.role.toUpperCase()}\n\n${m.content}\n\n---\n\n`);
@@ -32,8 +34,20 @@ function saveConversation(messages, fullResponse, model) {
             // Append only the new turn (Last User Message + Assistant Response)
             const lastUserMsg = messages[messages.length - 1];
             if (lastUserMsg.role === 'user') {
-                content += `## USER\n\n${lastUserMsg.content}\n\n---\n\n`;
+                pendingUserMsg = `## USER\n\n${lastUserMsg.content}\n\n---\n\n`;
             }
+        }
+
+        // DEDUPLICATION: Check if the last text in file matches pending User Msg
+        if (fs.existsSync(filename) && pendingUserMsg) {
+            const existing = fs.readFileSync(filename, 'utf-8'); // Trade-off: Read whole file for safety
+            if (!existing.trim().endsWith(lastUserMsg.content.trim() + "\n\n---")) {
+                content += pendingUserMsg;
+            } else {
+                console.log("[Archivist] Skipping duplicate user message.");
+            }
+        } else if (pendingUserMsg) {
+            content += pendingUserMsg;
         }
 
         content += `## ASSISTANT\n\n${fullResponse}\n\n---\n\n`;
@@ -50,7 +64,15 @@ function saveConversation(messages, fullResponse, model) {
 // --- LOGGING ---
 app.use((req, res, next) => {
     const timestamp = new Date().toISOString().split('T')[1].slice(0, -1);
+
+    // REDACT sensitive headers
+    const safeHeaders = { ...req.headers };
+    ['authorization', 'cookie', 'x-gitlab-token'].forEach(h => {
+        if (safeHeaders[h]) safeHeaders[h] = '[REDACTED]';
+    });
+
     console.log(`[${timestamp}] [Gateway] INCOMING -> ${req.method} ${req.url}`);
+    console.log(`[${timestamp}] [Gateway] Headers: ${JSON.stringify(safeHeaders)}`);
     next();
 });
 
@@ -90,7 +112,11 @@ const chatHandler = async (req, res) => {
             aggregatedContext,
             (chunk) => {
                 // Handle Data Chunk
-                fullResponseAccumulator += chunk;
+                if (fullResponseAccumulator.length < 1024 * 1024) { // 1MB Limit
+                    fullResponseAccumulator += chunk;
+                } else if (fullResponseAccumulator.length === 1024 * 1024) {
+                    fullResponseAccumulator += "\n[...Truncated for RAM Safety...]";
+                }
 
                 // Format: OpenAI Stream
                 const payload = JSON.stringify({
@@ -134,9 +160,11 @@ app.post('/api/chat', chatHandler);
 app.post('/v1/chat/completions', chatHandler);
 app.get('/api/tags', (req, res) => res.json({ models: [{ name: "gitlab-integrated" }] }));
 
-const PORT = 11435;
-const server = app.listen(PORT, '127.0.0.1', () => {
-    console.log(`[Info] Bridge active on 127.0.0.1:${PORT}`);
-});
+if (require.main === module) {
+    const PORT = 11435;
+    app.listen(PORT, '127.0.0.1', () => {
+        console.log(`[Info] Bridge active on 127.0.0.1:${PORT}`);
+    });
+}
 
-module.exports = server;
+module.exports = app;
