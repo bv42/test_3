@@ -16,3 +16,19 @@ Run the provided batch script to start Chrome with the remote debugging port ena
 
 ```bash
 .\debug_init.bat
+```
+
+### 2. Start the Bridge Server
+In a new terminal, launch the local API gateway:
+
+```bash
+npm start
+```
+The server will start on `http://127.0.0.1:11435`.
+
+### 3. Verify Connectivity
+You can verify the system integrity by running the test suite:
+
+```bash
+npm test
+```

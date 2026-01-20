@@ -27,12 +27,15 @@ function saveConversation(messages, fullResponse, model) {
         let content = "";
         let pendingUserMsg = "";
 
+
+        let lastUserMsg = null;
+
         if (!fs.existsSync(filename)) {
             content += `---\nid: ${threadId}\nmodel: ${model}\ncreated: ${new Date().toISOString()}\n---\n\n`;
             messages.forEach(m => content += `## ${m.role.toUpperCase()}\n\n${m.content}\n\n---\n\n`);
         } else {
             // Append only the new turn (Last User Message + Assistant Response)
-            const lastUserMsg = messages[messages.length - 1];
+            lastUserMsg = messages[messages.length - 1];
             if (lastUserMsg.role === 'user') {
                 pendingUserMsg = `## USER\n\n${lastUserMsg.content}\n\n---\n\n`;
             }
@@ -99,7 +102,7 @@ const chatHandler = async (req, res) => {
     let isComplete = false;
     let fullResponseAccumulator = ""; // For the Archivist
 
-    const idleTimeout = setTimeout(() => {
+    let idleTimeout = setTimeout(() => {
         if (!isComplete) {
             console.log("[Bridge] Timeout waiting for browser data.");
             res.end();
@@ -107,10 +110,23 @@ const chatHandler = async (req, res) => {
         }
     }, 45000);
 
+    const resetIdleTimeout = () => {
+        clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(() => {
+            if (!isComplete) {
+                console.log("[Bridge] Timeout waiting for browser data.");
+                res.end();
+                isComplete = true;
+            }
+        }, 45000);
+    };
+
     try {
         await automationService.executeQuery(
             aggregatedContext,
             (chunk) => {
+                resetIdleTimeout(); // Reset timeout on activity
+
                 // Handle Data Chunk
                 if (fullResponseAccumulator.length < 1024 * 1024) { // 1MB Limit
                     fullResponseAccumulator += chunk;
