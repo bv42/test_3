@@ -104,9 +104,24 @@ const chatHandler = async (req, res) => {
 
     let idleTimeout = setTimeout(() => {
         if (!isComplete) {
-            console.log("[Bridge] Timeout waiting for browser data.");
+            console.log("[Bridge] Stream stalled. Terminating gracefully (Rescue Mode).");
+
+            // Rescue Mode: Send valid termination so client preserves data
+            const rescuePayload = JSON.stringify({
+                id: "chatcmpl-" + Date.now(),
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: model,
+                choices: [{ index: 0, delta: {}, finish_reason: "length" }]
+            });
+            res.write(`data: ${rescuePayload}\n\n`);
+            res.write(`data: [DONE]\n\n`);
+
             res.end();
             isComplete = true;
+
+            // Trigger Archivist (Save partial conversation)
+            saveConversation(messages, fullResponseAccumulator, model);
         }
     }, 45000);
 
@@ -114,9 +129,23 @@ const chatHandler = async (req, res) => {
         clearTimeout(idleTimeout);
         idleTimeout = setTimeout(() => {
             if (!isComplete) {
-                console.log("[Bridge] Timeout waiting for browser data.");
+                console.log("[Bridge] Stream stalled. Terminating gracefully (Rescue Mode).");
+
+                const rescuePayload = JSON.stringify({
+                    id: "chatcmpl-" + Date.now(),
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: model,
+                    choices: [{ index: 0, delta: {}, finish_reason: "length" }]
+                });
+                res.write(`data: ${rescuePayload}\n\n`);
+                res.write(`data: [DONE]\n\n`);
+
                 res.end();
                 isComplete = true;
+
+                // Trigger Archivist
+                saveConversation(messages, fullResponseAccumulator, model);
             }
         }, 45000);
     };
