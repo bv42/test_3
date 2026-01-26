@@ -99,6 +99,9 @@ const chatHandler = async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
+    // 3. Generate Stream ID (Must be constant for the whole stream)
+    const streamId = "chatcmpl-" + Date.now();
+
     let isComplete = false;
     let fullResponseAccumulator = ""; // For the Archivist
 
@@ -132,7 +135,7 @@ const chatHandler = async (req, res) => {
                 console.log("[Bridge] Stream stalled. Terminating gracefully (Rescue Mode).");
 
                 const rescuePayload = JSON.stringify({
-                    id: "chatcmpl-" + Date.now(),
+                    id: streamId,
                     object: "chat.completion.chunk",
                     created: Math.floor(Date.now() / 1000),
                     model: model,
@@ -154,7 +157,7 @@ const chatHandler = async (req, res) => {
         await automationService.executeQuery(
             aggregatedContext,
             (chunk) => {
-                resetIdleTimeout(); // Reset timeout on activity
+                resetIdleTimeout(); // TEST MODE: Simulate Stall by NOT resetting
 
                 // Handle Data Chunk
                 if (fullResponseAccumulator.length < 1024 * 1024) { // 1MB Limit
@@ -165,7 +168,7 @@ const chatHandler = async (req, res) => {
 
                 // Format: OpenAI Stream
                 const payload = JSON.stringify({
-                    id: "chatcmpl-" + Date.now(),
+                    id: streamId,
                     object: "chat.completion.chunk",
                     created: Math.floor(Date.now() / 1000),
                     model: model,
@@ -177,7 +180,7 @@ const chatHandler = async (req, res) => {
                 // Handle Completion
                 if (!isComplete) {
                     const donePayload = JSON.stringify({
-                        id: "chatcmpl-" + Date.now(),
+                        id: streamId,
                         object: "chat.completion.chunk",
                         created: Math.floor(Date.now() / 1000),
                         model: model,
