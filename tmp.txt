@@ -343,4 +343,70 @@ n8n/CrewAI: For workflow automation
 
 /b/
 
+
+5. Requirements 
+R1 — Authentication (JWT) 
+
+     Extract Bearer token from  Authorization header. 
+     Decode using  PyJWT with the configured secret and algorithm  
+
+    . 
+     Extract  sub claim as the username. 
+     Reject with  401 if token is missing, expired, or malformed. 
+     Reject with  403 if username is not in  ALLOWED_USERS. 
+
+R2 — Input Validation 
+
+     Validate all fields per the rules in §4.2. Use Pydantic model validators. 
+     install_path: must be an absolute Windows path. Must be under one of the  ALLOWED_INSTALL_PATHS prefixes (path traversal protection — resolve  .. before comparison). 
+     change_request_id: required when  environment=prod, rejected at model level otherwise. 
+
+R3 — PROD Change Request Validation 
+
+For  environment=prod only: 
+
+     Call ServiceFirst API:  GET {SERVICEFIRST_URL}/change_requests/{change_request_id} with header  Authorization: Bearer {SERVICEFIRST_API_KEY}  
+
+    . 
+     Validate response: 
+        status must be  "approved"
+        target_server must match local  COMPUTERNAME
+        application must match  app_name (case-insensitive) 
+     If ServiceFirst API is unreachable after 3 attempts (2s, 4s, 8s backoff): reject with  502. 
+     If any validation fails: reject with  400 and explicit reason. 
+
+R4 — Deployment Execution 
+
+     Acquire an in-memory lock per  (app_name, environment). If already locked, reject with  409 Conflict. 
+     Call the existing internal deployment tooling via  subprocess (PowerShell script or executable). Pass:  app_name,  version,  install_path,  environment. 
+     Capture stdout/stderr. Timeout after 5 minutes. 
+     Release lock in  finally block. 
+     Return success/failure based on exit code. 
+
+R5 — Audit Logging 
+
+     Every deployment request (success or failure) must be logged with: timestamp, username, all request fields, result, duration. 
+     Use Python  logging module to a rotating file ( deployment_audit.log). 
+     Log format: structured JSON, one line per event. 
+
+R6 — Concurrency 
+
+     The agent handles one deployment  per app per environment at a time (in-memory  threading.Lock dict). 
+     Different apps can deploy concurrently. 
+     FastAPI runs with uvicorn workers=1 (single process, simplifies locking). 
+
+6. What Is Out of Scope 
+
+    TLS termination (handled by upstream reverse proxy or IIS ARR) 
+    JWT  issuance (handled by a separate identity provider) 
+    The actual file-fetch-and-install logic (existing internal tooling) 
+    Role-based access control (future enhancement) 
+    Database storage of 
+
+ 
+ 
+   
+ 
+  
+
 /c/
