@@ -27,12 +27,15 @@ function saveConversation(messages, fullResponse, model) {
         let content = "";
         let pendingUserMsg = "";
 
+
+        let lastUserMsg = null;
+
         if (!fs.existsSync(filename)) {
             content += `---\nid: ${threadId}\nmodel: ${model}\ncreated: ${new Date().toISOString()}\n---\n\n`;
             messages.forEach(m => content += `## ${m.role.toUpperCase()}\n\n${m.content}\n\n---\n\n`);
         } else {
             // Append only the new turn (Last User Message + Assistant Response)
-            const lastUserMsg = messages[messages.length - 1];
+            lastUserMsg = messages[messages.length - 1];
             if (lastUserMsg.role === 'user') {
                 pendingUserMsg = `## USER\n\n${lastUserMsg.content}\n\n---\n\n`;
             }
@@ -96,21 +99,66 @@ const chatHandler = async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
+    // 3. Generate Stream ID (Must be constant for the whole stream)
+    const streamId = "chatcmpl-" + Date.now();
+
     let isComplete = false;
     let fullResponseAccumulator = ""; // For the Archivist
 
-    const idleTimeout = setTimeout(() => {
+    let idleTimeout = setTimeout(() => {
         if (!isComplete) {
-            console.log("[Bridge] Timeout waiting for browser data.");
+            console.log("[Bridge] Stream stalled. Terminating gracefully (Rescue Mode).");
+
+            // Rescue Mode: Send valid termination so client preserves data
+            const rescuePayload = JSON.stringify({
+                id: "chatcmpl-" + Date.now(),
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: model,
+                choices: [{ index: 0, delta: {}, finish_reason: "length" }]
+            });
+            res.write(`data: ${rescuePayload}\n\n`);
+            res.write(`data: [DONE]\n\n`);
+
             res.end();
             isComplete = true;
+
+            // Trigger Archivist (Save partial conversation)
+            saveConversation(messages, fullResponseAccumulator, model);
         }
     }, 45000);
+
+    const resetIdleTimeout = () => {
+        clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(() => {
+            if (!isComplete) {
+                console.log("[Bridge] Stream stalled. Terminating gracefully (Rescue Mode).");
+
+                const rescuePayload = JSON.stringify({
+                    id: streamId,
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: model,
+                    choices: [{ index: 0, delta: {}, finish_reason: "length" }]
+                });
+                res.write(`data: ${rescuePayload}\n\n`);
+                res.write(`data: [DONE]\n\n`);
+
+                res.end();
+                isComplete = true;
+
+                // Trigger Archivist
+                saveConversation(messages, fullResponseAccumulator, model);
+            }
+        }, 45000);
+    };
 
     try {
         await automationService.executeQuery(
             aggregatedContext,
             (chunk) => {
+                resetIdleTimeout(); // TEST MODE: Simulate Stall by NOT resetting
+
                 // Handle Data Chunk
                 if (fullResponseAccumulator.length < 1024 * 1024) { // 1MB Limit
                     fullResponseAccumulator += chunk;
@@ -120,7 +168,7 @@ const chatHandler = async (req, res) => {
 
                 // Format: OpenAI Stream
                 const payload = JSON.stringify({
-                    id: "chatcmpl-" + Date.now(),
+                    id: streamId,
                     object: "chat.completion.chunk",
                     created: Math.floor(Date.now() / 1000),
                     model: model,
@@ -132,7 +180,7 @@ const chatHandler = async (req, res) => {
                 // Handle Completion
                 if (!isComplete) {
                     const donePayload = JSON.stringify({
-                        id: "chatcmpl-" + Date.now(),
+                        id: streamId,
                         object: "chat.completion.chunk",
                         created: Math.floor(Date.now() / 1000),
                         model: model,

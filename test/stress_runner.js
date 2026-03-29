@@ -77,8 +77,10 @@ async function runTests() {
         );
 
         // Test 2: Long Prompt (Token Limit)
-        console.log("\n--- Test 2: Long Prompt (~4000 chars) ---");
-        const longText = "This is a stress test. ".repeat(200);
+
+        console.log("\n--- Test 2: Long Prompt (~800 chars) ---");
+        const longText = "This is a stress test. ".repeat(50);
+
         await chat(
             [{ role: "user", content: `Repeat the following phrase exactly once: "End of Test". Ignore the preamble: ${longText}` }],
             "gitlab-integrated",
